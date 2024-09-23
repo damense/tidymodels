@@ -1,0 +1,183 @@
+---
+title: "The Game is Afoot"
+author: "Moi"
+format: html
+editor: visual
+editor_options: 
+  chunk_output_type: console
+---
+
+## Data download and prep
+
+```{r}
+library(tidyverse)
+library(tidytext)
+library(gutenbergr)
+
+andersen_raw <- gutenberg_download("27200")
+
+titles <- unique(andersen_raw[7:152,2]) |> 
+  tolower() |> 
+  trimws() |>
+  unlist() 
+andersen <- andersen_raw %>%
+  mutate(story = ifelse(tolower(text) %in% titles,
+                        text,
+                        NA),
+         story = ifelse(text=="",
+                        NA,
+                        story)) %>%
+  fill(story) %>%
+  filter(!is.na(story)) %>%
+  mutate(story = factor(story, levels = unique(story)))
+
+tidy_andersen <- andersen |> 
+  mutate(line=row_number(),
+         text=gsub("\'s","",text)) |> 
+  unnest_tokens(word, text) |> 
+  anti_join(stop_words) 
+
+
+```
+
+## explore td_idf
+
+```{r}
+
+longest_stories <- tidy_andersen |>  
+  group_by(story) |> 
+  summarize(n=n()) |> 
+  arrange(desc(n)) |> 
+  head(n=16) |> 
+  select(story) |> 
+  unlist()
+
+tidy_andersen |> 
+  filter(story %in% longest_stories) |> 
+  count(story, word, sort=T) |> 
+  bind_tf_idf(word, story, n) |> 
+  group_by(story) |> 
+  top_n(10) |> 
+  ungroup() |> 
+  mutate(word = reorder(word, tf_idf)) |> 
+  ggplot(aes(word, tf_idf, fill = story)) +
+  geom_col(show.legend = F)+
+  theme_bw()+
+  facet_wrap(~story, scales="free")+
+  coord_flip()
+
+```
+
+## Implement topic modeling
+
+```{r}
+library(stm)
+library(quanteda)
+
+andersen_dfm <- tidy_andersen |> 
+  count(story, word, sort = T) |> 
+  cast_dfm(story, word, n)
+
+topic_model <- stm(andersen_dfm,
+                   K=6,
+                   init.type = "Spectral")
+summary(topic_model)
+
+```
+
+```{r}
+td_beta <- tidy(topic_model)
+
+td_beta |> 
+  group_by(topic) |> 
+  top_n(10) |> 
+  ungroup() |> 
+  mutate(term = reorder(term, beta)) |> 
+  ggplot(aes(term, beta, fill = topic)) +
+  geom_col(show.legend = F)+
+  theme_bw()+
+  facet_wrap(~topic, scales="free")+
+  coord_flip() 
+
+td_gamma <- tidy(topic_model, matrix="gamma",
+                document_names = rownames(andersen_dfm))
+
+ggplot(td_gamma, aes(gamma,fill=as.factor(topic)))+
+  geom_histogram(show.legend = F)+
+  facet_wrap(~topic, scales = "free")
+
+group_k3 <- td_gamma |> 
+  filter(gamma>0.75) |> 
+  pivot_wider(names_from = topic, values_from = gamma)
+
+group_k6 <- td_gamma |> 
+  filter(gamma>0.75) |> 
+  pivot_wider(names_from = topic, values_from = gamma)
+
+group_k9 <- td_gamma |> 
+  filter(gamma>0.75) |> 
+  pivot_wider(names_from = topic, values_from = gamma)
+
+group_k12 <- td_gamma |> 
+  filter(gamma>0.75) |> 
+  pivot_wider(names_from = topic, values_from = gamma)
+
+```
+
+
+```{r}
+library(ggsankey)
+sankey_andersen <- group_k3 |> 
+  pivot_longer(cols = -document) |> 
+  filter(!is.na(value)) |>
+  mutate(k3=name) |> 
+  select(-value,-name) |> 
+  left_join(
+    group_k6 |> 
+  pivot_longer(cols = -document) |> 
+  filter(!is.na(value)) |>
+  mutate(k6=name) |> 
+  select(-value,-name),
+  by=join_by(document)
+  )|> 
+  left_join(
+    group_k9 |> 
+  pivot_longer(cols = -document) |> 
+  filter(!is.na(value)) |>
+  mutate(k9=name) |> 
+  select(-value,-name),
+  by=join_by(document)
+  )|> 
+  left_join(
+    group_k12 |> 
+  pivot_longer(cols = -document) |> 
+  filter(!is.na(value)) |>
+  mutate(k12=name) |> 
+  select(-value,-name),
+  by=join_by(document)
+  )   
+sankey_andersen |> 
+  make_long(k3,k6,k9,k12) |> 
+  ggplot(aes(
+    x=x,
+    next_x=next_x,
+    node=node,
+    next_node=next_node,
+    fill=factor(node),
+    label = node
+  ))+
+  geom_sankey(flow.alpha = .6,
+              node.color = "gray30")+
+  geom_sankey_label(size = 3, color = "white", fill = "gray40") +
+  theme_sankey(base_size = 18) +
+  theme(legend.position = "none",
+        plot.title = element_text(hjust = .5)) +
+  labs(x = NULL) 
+
+sankey_andersen |> 
+  filter(document %in% c("THE SNOW QUEEN","THE UGLY DUCKLING","THE LITTLE MERMAID","THE EMPEROR'S NEW SUIT",
+                         "THE LITTLE MATCH-SELLER","LITTLE TINY OR THUMBELINA","THE PRINCESS AND THE PEA",
+                         "THE NIGHTINGALE"))
+
+
+```
